@@ -1,0 +1,15 @@
+{
+  "name": "canvas-diagram-frontend",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/index.js --bundle --minify --format=iife --global-name=CanvasDiagramMaxGraph --outfile=../assets/maxgraph.bundle.js"
+  },
+  "dependencies": {
+    "@iconify-json/lucide": "1.2.130",
+    "@iconify/utils": "3.1.7",
+    "@maxgraph/core": "0.24.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10"
+  }
+}
