@@ -58,6 +58,7 @@ class CanvasElementType(str, Enum):
     BPMN_INCLUSIVE_GATEWAY = "bpmn_inclusive_gateway"
     POOL = "pool"
     PACKAGE = "package"
+    STATE = "state"
     INITIAL_STATE = "initial_state"
     FINAL_STATE = "final_state"
     FORK_JOIN = "fork_join"

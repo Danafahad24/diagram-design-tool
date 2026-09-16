@@ -128,6 +128,12 @@ Never:
 - reference an element that does not exist
 - create a self-connection unless explicitly required
 - invent unsupported element types
+- create an invisible/placeholder element just to bend a connection's route
+- merge several unrelated relationships into one shared connector
+- route a connection through the center of an element it does not connect to
+
+Keep arrowhead size and line thickness consistent across one diagram, and
+avoid unnecessary connector crossings where a cleaner layout is available.
 
 ---
 
@@ -202,6 +208,7 @@ Use:
 - `system_boundary`
 - `lifeline`
 - `activation`
+- `state`
 - `initial_state`
 - `final_state`
 - `fork_join`
@@ -234,8 +241,7 @@ Use:
 - `double_ellipse`
 - `text`
 
-For grouped process ownership, use `swimlane` or `pool` with a `lanes` list when
-supported by the request schema.
+For grouped process ownership, use `swimlane` or `pool` with a `lanes` list.
 
 For `class`, `entity`, and `table`, put each row on its own line in `text`.
 
@@ -478,9 +484,8 @@ Rules:
 - Start with `initial_state` (filled circle). End with `final_state`
   (circle-in-circle). A diagram may have several final states but only one
   initial state.
-- Represent each named state as a `rounded_rectangle` labeled with the state
-  name — there is no dedicated "state" shape, so do not use `process`,
-  `class`, or `entity` for a state.
+- Represent each named state with the `state` type, labeled with the state
+  name. Do not use `process`, `class`, or `entity` for a state.
 - Every transition is a connection labeled with the triggering event or
   condition, `end_arrow: "open"` or `"classic"`, not dashed.
 - A state may transition to itself (self-connection allowed here, same as a
@@ -539,4 +544,3 @@ Rules:
 - Do not use dashed lines for solid-line reporting relationships; reserve
   dashed connections only if the user explicitly asks for a dotted-line
   (matrix/indirect) reporting relationship.
-FK role_id

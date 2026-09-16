@@ -10,6 +10,9 @@ import asyncio
 import base64
 import binascii
 import re
+import threading
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 from uuid import uuid4
 from typing import Literal
@@ -30,6 +33,71 @@ from workspace_agent.common.ownership import document_key
 
 
 router = APIRouter()
+
+
+MAX_DIAGRAM_ELEMENTS = 500
+MAX_DIAGRAM_CONNECTIONS = 1000
+MAX_DIAGRAM_EXTENT = 20000
+
+
+def _check_diagram_limits(diagram: CreateCanvasDiagramBody) -> None:
+    """Reject diagrams too large to render or edit sensibly.
+
+    Applied to every entry point that builds a diagram (interactive editor
+    and office export alike) so the limits can't be bypassed by calling one
+    tool instead of the other.
+    """
+
+    if (
+        len(diagram.elements) > MAX_DIAGRAM_ELEMENTS
+        or len(diagram.connections) > MAX_DIAGRAM_CONNECTIONS
+    ):
+        raise HTTPException(
+            422,
+            f"Diagram exceeds {MAX_DIAGRAM_ELEMENTS} elements or "
+            f"{MAX_DIAGRAM_CONNECTIONS} connections.",
+        )
+
+    if any(
+        max(abs(e.x), abs(e.y), e.width, e.height) > MAX_DIAGRAM_EXTENT
+        for e in diagram.elements
+    ):
+        raise HTTPException(
+            422, f"Diagram geometry must stay within {MAX_DIAGRAM_EXTENT} units."
+        )
+
+
+# Per-user sliding-window limits. export_canvas_office already has a global
+# semaphore bounding concurrent renders; these bound how often any one user
+# can call the cheaper, unbounded-concurrency tools.
+RATE_LIMIT_WINDOW_SECONDS = 60
+RATE_LIMITS = {
+    "create_canvas_diagram": 20,
+    "search_diagram_icons": 30,
+}
+
+_rate_limit_lock = threading.Lock()
+_rate_limit_hits: dict[str, deque[float]] = defaultdict(deque)
+
+
+def _enforce_rate_limit(bucket: str, user_id: str) -> None:
+    limit = RATE_LIMITS[bucket]
+    key = f"{bucket}:{user_id}"
+    now = time.monotonic()
+
+    with _rate_limit_lock:
+        hits = _rate_limit_hits[key]
+        while hits and now - hits[0] > RATE_LIMIT_WINDOW_SECONDS:
+            hits.popleft()
+
+        if len(hits) >= limit:
+            raise HTTPException(
+                429,
+                f"Too many requests; limit is {limit} per "
+                f"{RATE_LIMIT_WINDOW_SECONDS}s. Try again shortly.",
+            )
+
+        hits.append(now)
 
 
 # The compiled bundle from canvas_diagram/frontend/src/index.js. editor.py
@@ -127,7 +195,10 @@ def create_canvas_diagram(
     config.check_auth(x_api_key)
 
     # Validate/resolve the Open WebUI identity.
-    owner_for(request)
+    user_id, _owner = owner_for(request)
+    _enforce_rate_limit("create_canvas_diagram", user_id)
+
+    _check_diagram_limits(body)
 
     try:
         hydrated = hydrate_diagram(body)
@@ -177,7 +248,8 @@ def search_diagram_icons(
     x_api_key: str | None = Header(default=None),
 ):
     config.check_auth(x_api_key)
-    owner_for(request)
+    user_id, _owner = owner_for(request)
+    _enforce_rate_limit("search_diagram_icons", user_id)
 
     try:
         found = iconify.search(body.query, body.limit)
@@ -232,20 +304,10 @@ async def export_canvas_office(
     config.check_auth(x_api_key)
     _user_id, owner = owner_for(request)
 
-    if (
-        not body.diagram.elements
-        or len(body.diagram.elements) > 500
-        or len(body.diagram.connections) > 1000
-    ):
-        raise HTTPException(
-            422, "Office export requires 1–500 elements and at most 1000 connections."
-        )
+    if not body.diagram.elements:
+        raise HTTPException(422, "Office export requires at least 1 element.")
 
-    if any(
-        max(abs(e.x), abs(e.y), e.width, e.height) > 20000
-        for e in body.diagram.elements
-    ):
-        raise HTTPException(422, "Office diagram geometry must stay within 20000 units.")
+    _check_diagram_limits(body.diagram)
 
     try:
         existing = (

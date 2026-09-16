@@ -29,6 +29,8 @@ import base64
 import os
 import re
 import threading
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -82,6 +84,12 @@ ICON_PIXELS = 256
 
 MAX_SVG_BYTES = 512_000
 MAX_SEARCH_LIMIT = 30
+
+# Icon SVGs and collection metadata never change for a given id, so these are
+# plain size-capped LRU caches (evict oldest, no TTL needed) rather than
+# unbounded dicts that would grow for the life of the process.
+MAX_ICON_CACHE = 2000
+MAX_COLLECTION_CACHE = 200
 
 # Iconify clamps `limit` up to 32; asking for less is pointless, so ask for a
 # useful pool and slice it here.
@@ -214,16 +222,37 @@ class IconifyClient:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._icons: dict[str, tuple[str, str]] = {}
-        self._collections: dict[str, dict] = {}
+        self._icons: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._collections: OrderedDict[str, dict] = OrderedDict()
+        # One pooled client for the process lifetime instead of a new
+        # connection per call; httpx.Client is safe for concurrent use across
+        # threads. Two workers is exactly what search() needs to run its
+        # branded/general lookups in parallel.
+        self._client = httpx.Client(timeout=15, follow_redirects=False)
+        self._search_pool = ThreadPoolExecutor(max_workers=2)
+
+    @staticmethod
+    def _cache_get(cache: OrderedDict, key: str):
+        try:
+            value = cache[key]
+        except KeyError:
+            return None
+        cache.move_to_end(key)
+        return value
+
+    @staticmethod
+    def _cache_put(cache: OrderedDict, key: str, value, max_size: int) -> None:
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > max_size:
+            cache.popitem(last=False)
 
     # -- transport ----------------------------------------------------------
 
     def _get(self, path: str, params: dict | None = None) -> httpx.Response:
         url = _api_base() + path
         try:
-            with httpx.Client(timeout=15, follow_redirects=False) as client:
-                response = client.get(url, params=params)
+            response = self._client.get(url, params=params)
         except httpx.HTTPError as exc:
             raise IconifyError(
                 "Could not reach the Iconify icon service; check outbound "
@@ -245,7 +274,7 @@ class IconifyClient:
 
     def collection(self, prefix: str) -> dict:
         with self._lock:
-            cached = self._collections.get(prefix)
+            cached = self._cache_get(self._collections, prefix)
         if cached is not None:
             return cached
 
@@ -256,7 +285,7 @@ class IconifyClient:
             meta = {}
 
         with self._lock:
-            self._collections[prefix] = meta
+            self._cache_put(self._collections, prefix, meta, MAX_COLLECTION_CACHE)
         return meta
 
     # -- search -------------------------------------------------------------
@@ -276,8 +305,12 @@ class IconifyClient:
 
         limit = max(1, min(int(limit), MAX_SEARCH_LIMIT))
 
-        branded = self._raw_search(query, ",".join(BRAND_COLLECTIONS))
-        general = self._raw_search(query)
+        branded_future = self._search_pool.submit(
+            self._raw_search, query, ",".join(BRAND_COLLECTIONS)
+        )
+        general_future = self._search_pool.submit(self._raw_search, query)
+        branded = branded_future.result()
+        general = general_future.result()
 
         collections: dict[str, dict] = {}
         collections.update(general.get("collections") or {})
@@ -337,7 +370,7 @@ class IconifyClient:
 
         cache_key = f"{icon_id}|{color or ''}"
         with self._lock:
-            cached = self._icons.get(cache_key)
+            cached = self._cache_get(self._icons, cache_key)
         if cached is not None:
             return cached
 
@@ -362,7 +395,7 @@ class IconifyClient:
 
         resolved = (to_data_uri(svg), attribution)
         with self._lock:
-            self._icons[cache_key] = resolved
+            self._cache_put(self._icons, cache_key, resolved, MAX_ICON_CACHE)
         return resolved
 
 
