@@ -446,26 +446,45 @@ draw a class as a `use_case` oval.
 
 ## Sequence Diagram
 
+A connection has no `y` of its own — its position on screen comes entirely
+from the `x`/`y` of the two elements it connects. `lifeline` elements run the
+full height of the diagram, so two messages that both connect
+lifeline-directly-to-lifeline connect the same two points and land on top of
+each other: same drawn position, same label position, unreadable overlapping
+text. This is the single most common way a sequence diagram breaks. Never
+connect a message directly between two `lifeline` elements.
+
 Rules:
 
 - One `lifeline` element per participant, placed left to right in the order
   participants first appear. A lifeline is the participant's header box with
   its dashed line already drawn down the column — do not draw that line
-  yourself and do not connect anything to extend it.
-- Increasing `y` is later in time. Never place a message above a lifeline
-  element it happens after.
-- An `activation` element is a bar laid directly on top of a lifeline's
-  column for the span that participant is active — position it by `x`/`y`/
-  `height` to line up with that lifeline; it is not a connection endpoint.
-- Every message is a connection between two `lifeline` elements, labeled with
-  the message text, positioned at the `y` when it occurs:
+  yourself.
+- Increasing `y` is later in time.
+- Give every message its own short `activation` element on the sending
+  lifeline's column and another on the receiving lifeline's column, each
+  positioned (`x` lined up with that lifeline, `y` at the exact moment the
+  message occurs, small `height`, e.g. 20–30). Connect the message between
+  those two activations, not between the lifelines. Because each pair of
+  activations sits at a different `y`, each message naturally lands at its
+  own height instead of collapsing onto the last one.
+- A participant that stays busy across several messages gets several
+  adjacent/overlapping short activations stacked at the right heights rather
+  than one giant activation spanning the whole diagram — a single tall
+  activation is exactly what causes every message touching it to converge on
+  one point.
+- Message arrow styles:
   - **Synchronous call**: `end_arrow: "block"`, `end_fill: true`,
     `dashed: false`.
   - **Return**: `end_arrow: "open"`, `dashed: true`.
   - **Asynchronous message**: `end_arrow: "open"`, `dashed: false`.
 - A self-message (a participant calling itself) is one of the few cases where
-  a connection may share `source` and `target`.
+  a connection may share `source` and `target` — use two activations on the
+  same lifeline, one just above the other.
 - Never route a message through a third lifeline it does not target.
+- Free-floating annotations (e.g. "verify password hash") belong as a `note`
+  element connected to the activation or message it explains — a `note` left
+  unconnected off to the side reads as unrelated to the flow.
 
 ---
 
