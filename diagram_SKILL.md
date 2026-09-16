@@ -131,7 +131,36 @@ Never:
 
 ---
 
-# 3. Supported element types
+# 3. Layout and coordinates
+
+`x`/`y` is the top-left corner of the element, in the same units as `width`/
+`height`. The editor auto-fits whatever bounding box the elements occupy, so
+there is no fixed canvas size to stay inside — the risk is not "off canvas",
+it is inconsistent scale: spreading a few elements across a huge empty area
+zooms everything out and shrinks the text, while cramming many elements
+together overlaps them.
+
+Rules:
+
+- Default element size is 160×80. Size custom shapes proportionally to that
+  — do not mix elements sized in the tens with elements sized in the
+  thousands in the same diagram.
+- Leave 60–120 units of clear space between adjacent element edges (not
+  between their `x`/`y` origins) so labels and connection routing have room.
+- Two elements' bounding boxes must never overlap unless one is a container
+  (`pool`, `swimlane`, `system_boundary`) deliberately holding the other.
+- Lay elements out on the axis the diagram type calls for — top-to-bottom for
+  a sequence of steps over time (flowchart, activity, sequence, state,
+  BPMN), left-to-right for a request/data path (architecture) or peer
+  relationships (ER, class), radiating outward from a center (mind map), or
+  strictly by hierarchy level (org chart, use case). See the per-type
+  sections below for which axis applies.
+- Keep spacing consistent across one diagram; do not tighten it for some
+  elements and loosen it for others without a reason tied to the content.
+
+---
+
+# 4. Supported element types
 
 ## Flowchart
 
@@ -218,7 +247,7 @@ to separate attributes from operations.
 
 ---
 
-# 4. Diagram-specific conventions
+# 5. Diagram-specific conventions
 
 ## Use Case Diagram
 
