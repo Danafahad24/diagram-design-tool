@@ -266,6 +266,26 @@ def search_diagram_icons(
     return found
 
 
+class DiagramInsertLocation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    position: Literal["end", "start", "after_heading", "after_slide"] = "end"
+    heading: str | None = Field(
+        default=None,
+        max_length=300,
+        description="docx, position=after_heading: text of the heading/paragraph to insert after.",
+    )
+    slide_index: int | None = Field(
+        default=None,
+        ge=0,
+        description="pptx, position=after_slide: 0-based index of an existing slide to insert after.",
+    )
+    slide_title: str | None = Field(
+        default=None,
+        max_length=300,
+        description="pptx, position=after_slide: alternative to slide_index, matched against a slide's title text.",
+    )
+
+
 class ExportCanvasOfficeBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     diagram: CreateCanvasDiagramBody
@@ -278,6 +298,7 @@ class ExportCanvasOfficeBody(BaseModel):
             "invented by the model. Appends on a new page/slide and returns a new file."
         ),
     )
+    location: DiagramInsertLocation = Field(default_factory=DiagramInsertLocation)
 
 
 # Each export spawns a headless Chromium; two at a time keeps the workbench
@@ -293,7 +314,32 @@ _office_slots = asyncio.Semaphore(2)
         "Render the diagram with maxGraph and return a DOCX or PPTX file. Optionally "
         "append to an existing document supplied by the file adapter. Response is "
         "binary and must be saved/published by the tool bridge as a user-downloadable "
-        "attachment. The original file is never overwritten."
+        "attachment. The original file is never overwritten.\n\n"
+
+        "REQUIRED APPROVAL STEP — do this before ever calling this tool: after the "
+        "diagram is created/edited with create_canvas_diagram, decide the insertion "
+        "point (if the user named one, use it; otherwise read the target document's "
+        "existing structure and pick the most sensible spot — e.g. after the section "
+        "it illustrates, or at the end if the document has no natural place for it), "
+        "then ask the user one combined question that shows the diagram preview, "
+        "states the proposed location in plain words, and offers exactly two choices: "
+        "'Approve and insert' or 'Edit diagram'. Wait for an explicit reply. Only call "
+        "this tool after that explicit approval. If the user asks for changes instead, "
+        "apply them (re-calling create_canvas_diagram, or using the user's own edits "
+        "made directly in the editor UI) and ask the same combined question again for "
+        "the new version — ask once per version, never repeat the question after it is "
+        "already approved unless the diagram or location changes again. This approval "
+        "gate applies only to inserting into a document; creating/previewing/editing a "
+        "standalone diagram never requires it.\n\n"
+
+        "`location.position` controls where the image lands: 'end' (default) appends "
+        "a new page (docx) or new last slide (pptx); 'start' inserts before all "
+        "existing content; 'after_heading' (docx) inserts right after the first "
+        "paragraph whose text contains `location.heading`; 'after_slide' (pptx) "
+        "inserts right after the slide matched by `location.slide_index` (0-based, "
+        "existing slides only) or `location.slide_title`. An unmatched heading or "
+        "slide title is an error — re-check the document structure and either supply "
+        "a value that matches or fall back to 'end' rather than guessing."
     ),
 )
 async def export_canvas_office(
@@ -326,7 +372,13 @@ async def export_canvas_office(
                 )
             )
             document_bytes = await asyncio.to_thread(
-                insert_diagram_png, png, diagram.title, body.format, existing, credits
+                insert_diagram_png,
+                png,
+                diagram.title,
+                body.format,
+                existing,
+                credits,
+                body.location.model_dump(),
             )
     except (ValueError, binascii.Error) as exc:
         raise HTTPException(422, str(exc)) from exc

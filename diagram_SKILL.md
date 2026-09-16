@@ -267,28 +267,54 @@ Rules:
 - Use `use_case` for use cases.
 - Use cases belong inside the system boundary.
 - Use-case elements should visually behave as UML use-case ovals.
-- Connect actors to use cases with association lines: one connection per
-  actor/use-case pair, `line_type: "straight"`, `end_arrow: "none"`,
-  `start_arrow: "none"`. The default line type is `"orthogonal"` — leaving it
+- **Association** (actor uses a use case): one connection per actor/use-case
+  pair, `line_type: "straight"`, `end_arrow: "none"`, `start_arrow: "none"`,
+  no label needed. The default line type is `"orthogonal"` — leaving it
   unset routes several associations from the same actor as right-angle bends
   that visually fuse into one shared bracket/trunk. Always set `line_type`
-  explicitly on a use-case association.
-- Use include/extend relationships only when semantically appropriate.
-- Keep the diagram focused on what actors want to achieve.
+  explicitly.
+- **`«include»`** (base use case always triggers another): connect
+  `source` = the including (base) use case → `target` = the included use
+  case. `dashed: true`, `end_arrow: "open"`, `label: "«include»"`.
+- **`«extend»`** (an optional use case extends a base one): connect
+  `source` = the extending use case → `target` = the base use case being
+  extended. `dashed: true`, `end_arrow: "open"`, `label: "«extend»"`. Note
+  the direction is opposite in feel from include — extend points from the
+  optional behavior back to the base it extends.
+- **Generalization** (one actor or use case is a specialization of another):
+  connect `source` = the child (specific) → `target` = the parent
+  (general). Solid line, `end_arrow: "block"`, `end_fill: false`,
+  `dashed: false` — a hollow triangle at the parent end, same convention as
+  UML class inheritance.
+- Use `«include»`/`«extend»`/generalization only when the user's request
+  actually implies that relationship (a shared mandatory sub-step, an
+  optional variant, or a genuine is-a specialization). Do not add them to
+  make the diagram look more complete — an association is the default and
+  usually correct choice.
+- Keep the diagram focused on what actors want to achieve, not on how the
+  system implements it.
+- If the request doesn't give you enough to tell whether two use cases
+  relate by include, extend, generalization, or nothing at all, ask a short
+  clarifying question rather than inventing the relationship.
 
 Do not represent backend infrastructure such as databases, queues, APIs, or
 storage as ordinary use cases unless the user explicitly asks for a hybrid
-technical diagram.
+technical diagram. Do not imply a step-by-step sequence (numbered arrows, a
+left-to-right pipeline) — a use case diagram shows capabilities and actors,
+not a process flow; use a flowchart or activity diagram for that.
 
 Incorrect:
 
 - putting actors inside the system boundary
 - rendering use cases as architecture boxes
 - showing databases as use cases
-- laying everything out as a technical request pipeline
+- laying everything out as a technical request pipeline, or numbering the
+  use cases as if they were sequential steps
 - leaving associations on default orthogonal routing so multiple lines from
   one actor merge into a single bent bracket instead of separate straight
   lines
+- an `«include»`/`«extend»`/generalization arrow pointing the wrong way, or
+  added where a plain association was all that was implied
 
 ---
 
@@ -390,6 +416,9 @@ Rules:
 - Identify primary keys and foreign keys when known.
 - Use relationships between entities.
 - Use correct cardinality where available.
+- Size the box to fit every row — same formula as UML Class: with default
+  `font_size` 14, `height` ≈ `30 + 21 × (number of attribute lines)`.
+  Undersizing silently drops the bottom rows instead of showing them.
 
 Supported ER connection arrowheads include:
 
@@ -422,6 +451,12 @@ Rules:
 - A line containing only `---` separates attributes (above) from operations
   (below), one member per line.
 - Do not put behavior in the attributes half or fields in the operations half.
+- Size the box to fit every row, or rows silently disappear rather than
+  wrapping or shrinking. With the default `font_size` of 14: header height is
+  30, each additional row is 21. Required `height` ≈ `30 + 21 × (number of
+  lines after the class name, including the `---` line)`. If `font_size` is
+  overridden to `s`, header ≈ `max(30, s + 16)` and row height ≈
+  `max(20, s × 1.5)`. Round up, not down, when in doubt.
 
 Relationships are plain connections with `style` set to the arrowheads below —
 there is no relationship "kind" field, so the arrowheads themselves carry the

@@ -1176,6 +1176,81 @@ summary:focus-visible {
       }
     );
   }
+  // Reverse of vertexStyleFor/edgeStyleFor above: reconstructs the
+  // elements/connections JSON (matching CreateCanvasDiagramBody) from
+  // whatever is currently on the canvas, including edits made directly in
+  // this editor that never went back through create_canvas_diagram.
+  function edgeLineTypeOf(style) {
+    if (style.curved) return "curved";
+    if (style.edgeStyle === "orthogonalEdgeStyle") return "orthogonal";
+    if (style.edgeStyle === "elbowEdgeStyle") return "elbow";
+    if (style.edgeStyle === "segmentEdgeStyle") return "segmented";
+    return "straight";
+  }
+  function collectDiagramData() {
+    const parent = graph.getDefaultParent();
+    const elements = graph.getChildVertices(parent).map((cell) => {
+      const style = cell.style || {};
+      const geometry = cell.geometry || {};
+      const element = {
+        id: String(cell.id || "").replace(/^vertex:/, ""),
+        type: style.diagramType || "rectangle",
+        x: Math.round(geometry.x || 0),
+        y: Math.round(geometry.y || 0),
+        width: Math.round(geometry.width || 160),
+        height: Math.round(geometry.height || 80),
+        rotation: Number(style.rotation || 0),
+        text: String(cell.value ?? ""),
+        style: {
+          fill: style.fillColor || DEFAULT_FILL,
+          stroke: style.strokeColor || DEFAULT_STROKE,
+          stroke_width: Number(style.strokeWidth ?? 2),
+          font_color: style.fontColor || DEFAULT_TEXT,
+          font_size: Number(style.fontSize || 14)
+        }
+      };
+      if (style.image) element.image_data = style.image;
+      if (style.laneLabels) {
+        try {
+          const lanes = JSON.parse(style.laneLabels);
+          if (Array.isArray(lanes) && lanes.length) element.lanes = lanes;
+        } catch (_) { /* malformed laneLabels stays unset */ }
+      }
+      return element;
+    });
+    const connections = graph.getChildEdges(parent).map((cell) => {
+      const style = cell.style || {};
+      return {
+        id: String(cell.id || "").replace(/^edge:/, ""),
+        source: String(cell.source?.id || "").replace(/^vertex:/, ""),
+        target: String(cell.target?.id || "").replace(/^vertex:/, ""),
+        label: cell.value ? String(cell.value) : null,
+        style: {
+          line_type: edgeLineTypeOf(style),
+          stroke: style.strokeColor || DEFAULT_EDGE,
+          stroke_width: Number(style.strokeWidth ?? 2),
+          dashed: Boolean(style.dashed),
+          start_arrow: style.startArrow || "none",
+          end_arrow: style.endArrow || "classic",
+          start_fill: style.startFill ?? true,
+          end_fill: style.endFill ?? true,
+          start_size: Number(style.startSize ?? 10),
+          end_size: Number(style.endSize ?? 10)
+        }
+      };
+    });
+    return { title: diagramData.title || "Diagram", elements, connections };
+  }
+  let reportDiagramStateTimer = null;
+  function reportDiagramState() {
+    clearTimeout(reportDiagramStateTimer);
+    reportDiagramStateTimer = setTimeout(() => {
+      parent.postMessage(
+        { type: "canvas:diagram:state", diagram: collectDiagramData() },
+        "*"
+      );
+    }, 400);
+  }
   function addElement(type, text, width = 160, height = 80) {
     newElementIndex += 1;
     const offset = (newElementIndex % 6) * 18;
@@ -2080,6 +2155,7 @@ summary:focus-visible {
     () => {
       updateUndoButtons();
       syncProperties();
+      reportDiagramState();
     }
   );
   [
@@ -2194,7 +2270,10 @@ summary:focus-visible {
     applyEdgeProperties();
   });
   // Backend document renderer consumes the exact same SVG as browser export.
-  window.CanvasDiagramExport = { svg: () => getSvgMarkup(true) };
+  // .data() lets a host that can reach into the iframe pull the current
+  // diagram JSON directly, instead of only listening for the pushed
+  // "canvas:diagram:state" postMessage.
+  window.CanvasDiagramExport = { svg: () => getSvgMarkup(true), data: () => collectDiagramData() };
   function reportHeight() {
     parent.postMessage(
       {
