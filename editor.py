@@ -2102,6 +2102,17 @@ summary:focus-visible {
       );
     }
   );
+  // Enter applies the text immediately instead of waiting for the textarea
+  // to lose focus; Shift+Enter still inserts a newline for multi-line text
+  // (entity/table rows, notes, ...).
+  propertyText.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      applyVertexProperties();
+      syncProperties();
+      propertyText.blur();
+    }
+  });
   [
     edgeLabel,
     edgeStyle,

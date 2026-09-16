@@ -267,7 +267,12 @@ Rules:
 - Use `use_case` for use cases.
 - Use cases belong inside the system boundary.
 - Use-case elements should visually behave as UML use-case ovals.
-- Connect actors to use cases with association lines.
+- Connect actors to use cases with association lines: one connection per
+  actor/use-case pair, `line_type: "straight"`, `end_arrow: "none"`,
+  `start_arrow: "none"`. The default line type is `"orthogonal"` — leaving it
+  unset routes several associations from the same actor as right-angle bends
+  that visually fuse into one shared bracket/trunk. Always set `line_type`
+  explicitly on a use-case association.
 - Use include/extend relationships only when semantically appropriate.
 - Keep the diagram focused on what actors want to achieve.
 
@@ -281,6 +286,9 @@ Incorrect:
 - rendering use cases as architecture boxes
 - showing databases as use cases
 - laying everything out as a technical request pipeline
+- leaving associations on default orthogonal routing so multiple lines from
+  one actor merge into a single bent bracket instead of separate straight
+  lines
 
 ---
 
