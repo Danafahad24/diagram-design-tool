@@ -103,6 +103,16 @@ COPY requirements.txt /app/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --retries 10 --timeout 120 -r /app/requirements.txt
 
+# `pip install playwright` (above, via requirements.txt) only installs the
+# Python driver - it does not fetch a browser. canvas_diagram/office.py's
+# render_diagram_png() launches Chromium specifically, so without this step
+# pw.chromium.launch() has no binary to run and raises "Office renderer
+# could not start" for every DOCX/PPTX export. --with-deps also pulls in
+# Chromium's OS-level shared libraries (libnss3, libatk, etc.), which this
+# image does not otherwise install.
+RUN --mount=type=cache,target=/root/.cache/ms-playwright \
+    playwright install --with-deps chromium
+
 # pdf.js for the artifact viewer: routes/artifacts.py serves these files under
 # /artifacts/-/pdfjs/<version>/ and workspace_agent.viewer's PDF page loads
 # them. Fetched at build time and pinned twice - by version and by the sha256
