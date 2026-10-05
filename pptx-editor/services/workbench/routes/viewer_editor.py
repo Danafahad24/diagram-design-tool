@@ -7,6 +7,7 @@ import logging
 import mimetypes
 import os
 import re
+import hashlib
 import secrets
 import threading
 import time
@@ -108,6 +109,46 @@ def _rendered(label, s3, bucket, object_key, max_bytes, content_type, build, *, 
         with _inflight_lock:
             _inflight.pop(object_key, None)
         event.set()
+
+
+_theme_lock = threading.Lock()
+_theme_cache: dict[str, tuple[float, str]] = {}
+
+
+def theme_fingerprint(design_system):
+    """A hash of what a render depends on besides the slide: the design system's index
+    (layouts, their stylesheets, the overlay's patches) and the stylesheet files it links
+    (by size and modification time). Part of every thumbnail and export cache key, so a
+    theme or overlay change is never answered with a picture of the old theme. Kept for a
+    minute so a rail of thumbnails does not stat the theme once per slide."""
+    now = time.monotonic()
+    with _theme_lock:
+        hit = _theme_cache.get(design_system)
+        if hit and now - hit[0] < 60:
+            return hit[1]
+    h = hashlib.sha256()
+    try:
+        catalog = catalogue.read_catalog(design_system)
+        h.update(json.dumps(catalog, sort_keys=True, default=str).encode())
+        sheets = set(catalog.get('globalCss') or [])
+        for layout in catalog.get('layouts') or []:
+            sheets.update(layout.get('stylesheets') or [])
+        root = themes.design_systems_dir().resolve()
+        for url in sorted(sheets):
+            m = re.match(r'/ds/([a-z0-9.-]+)/(.+)$', str(url))
+            if not m:
+                continue
+            file = (root / m[1] / m[2]).resolve()
+            if file.is_relative_to(root) and file.is_file():
+                st = file.stat()
+                h.update(f'{url}:{st.st_size}:{st.st_mtime_ns}'.encode())
+    except Exception:
+        log.warning('theme fingerprint unavailable for %s', design_system, exc_info=True)
+        h.update(b'unavailable')
+    value = h.hexdigest()
+    with _theme_lock:
+        _theme_cache[design_system] = (now, value)
+    return value
 
 
 def credential(token):
@@ -239,8 +280,9 @@ def render_one(token, sid):
     slide = next((s for s in source['slides'] if s['id'] == sid), None)
     if not slide:
         raise HTTPException(404, 'Slide not found.')
+    slide = store.render_slides([slide])[0]
     pics = pictures(source)
-    cache_key = store.thumbnail_cache_key(source['design_system'], slide, pics)
+    cache_key = store.thumbnail_cache_key(source['design_system'], slide, pics, theme_fingerprint(source['design_system']))
     object_key = store.thumbnail_object_key(p['key'], cache_key)
     t_load = time.monotonic() - t_start
 
@@ -273,7 +315,8 @@ def export_file(token, revision, kind):
         raise HTTPException(404)
     deck_key = credential(token)['key']  # no I/O: the key travels in the signed token itself
     source = select_revision(token, revision)
-    object_key = store.export_object_key(deck_key, revision, kind)
+    source = dict(source, slides=store.render_slides(source['slides']))
+    object_key = store.export_object_key(deck_key, revision, kind, theme_fingerprint(source['design_system']))
     t_load = time.monotonic() - t_start
 
     if kind == 'pptx':
@@ -312,6 +355,7 @@ def around(catalog, slide):
         out = selected
     else:
         out = dict(layouts[0] if layouts else {})
+        out['lang'] = out['dir'] = ''   # studio's harness gives a layout-less slide neither
         out['stylesheets'] = list(dict.fromkeys((catalog.get('globalCss') or []) + [v for x in layouts for v in x.get('stylesheets') or []]))
     if out.get('host') or out.get('scripts'):
         raise store.EditorError('This design system requires scripted components and is not supported by the manual editor yet.')
@@ -340,7 +384,11 @@ def _page(token, source, catalog, surrounding, sid, body):
     css = ''.join('<link rel="stylesheet" href="' + html.escape(rewrite(x), quote=True) + '">' for x in surrounding.get('stylesheets') or [])
     css += ''.join('<style>' + rewrite(x).replace('</style', '<\\/style') + '</style>' for x in surrounding.get('inlineStyles') or [])
     # Editor-only runtime changes are never serialized back to a theme stylesheet.
-    page = '<!doctype html><html lang="en"><head><meta charset="utf-8">' + css
+    # The same <html lang dir> studio's harness gives this layout: an RTL or Arabic layout
+    # styled through [dir]/:lang() must look in the editor as it does in every render.
+    lang, direction = surrounding.get('lang') or '', surrounding.get('dir') or ''
+    page = ('<!doctype html><html' + (' lang="' + html.escape(lang, quote=True) + '"' if lang else '')
+            + (' dir="' + html.escape(direction, quote=True) + '"' if direction else '') + '><head><meta charset="utf-8">' + css)
     page += '<link rel="stylesheet" href="' + public(PREFIX + '/static/child.css') + '"></head><body>' + rewrite(body)
     patches = [p for p in catalog.get('patches', []) if p.get('in_slides') and p.get('html')]
     settings = json.dumps({'sid': sid, 'patches': patches}).replace('<', '\\u003c')
@@ -395,6 +443,39 @@ async def shell(token: str, request: Request, layout: str = ''):
     except store.EditorError as exc:
         return HTMLResponse('<p>' + html.escape(str(exc)) + '</p>', status_code=422)
     return HTMLResponse(page, headers={'Content-Security-Policy': policy, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
+
+
+COVER_LIKE = re.compile(r'cover|title|closing|end|section|divider|agenda', re.I)
+
+
+def layout_template(token, layout):
+    """The design system's own fragment for a new slide, with its branding (logo,
+    classification bar, footer) intact. A slide added after a cover gets the first content
+    layout instead of a copy of the cover."""
+    _, source, _ = load(token)
+    design = source['design_system']
+    layouts = catalog_for(source).get('layouts') or []
+    ids = [l.get('id') for l in layouts]
+    current = next((l for l in layouts if layout in {l.get('id'), l.get('path')}), None)
+    chosen = current
+    if current is None or COVER_LIKE.search(str(current.get('id') or '') + ' ' + str(current.get('name') or '')):
+        chosen = next((l for l in layouts if not COVER_LIKE.search(str(l.get('id') or '') + ' ' + str(l.get('name') or ''))), current)
+    if chosen is None:
+        raise HTTPException(404, 'No layout to start a slide from.')
+    found = catalogue.fragments(design, [chosen['id']]).get('fragments', {}).get(chosen['id'])
+    if not found:
+        raise HTTPException(404, 'No layout to start a slide from.')
+    return {'layout': chosen['id'] if chosen['id'] in ids else layout, 'html': store.safe_html(found)}
+
+
+@router.get(PREFIX + '/layout/{token}')
+async def layout(token: str, request: Request, layout: str = ''):
+    await access(token, request)
+    try:
+        result = await run_in_threadpool(layout_template, token, layout[:200])
+    except store.EditorError as exc:
+        return JSONResponse({'detail': str(exc)}, status_code=422, headers=cors_headers(request.headers.get('origin', '')))
+    return JSONResponse(result, headers={**cors_headers(request.headers.get('origin', '')), 'Cache-Control': 'private, max-age=300'})
 
 
 def picture_bytes(token, name):

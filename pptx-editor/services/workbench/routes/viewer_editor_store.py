@@ -26,6 +26,25 @@ MAX_EXPORT_BYTES = 64 * 1024 * 1024
 STATE_NAME = 'editor-state.json'
 PARSER = html.HTMLParser(remove_comments=False, no_network=True)
 PICTURE_REF = re.compile(r'\.\./images/([^"\'\s)]+)')
+# Addresses the browser editor uses for theme assets and pictures, whatever origin or
+# path prefix the deployment serves it under. They must never reach stored HTML: the
+# renderer (thumbnails, PDF, PPTX) loads nothing from outside its own origin, so a logo
+# left as an editor URL shows in the editor and silently vanishes from every render.
+EDITOR_ASSET_URL = re.compile(r'[^\s"\'();&]*?/artifacts/-/edit/asset/[^/\s"\'();&]+/')
+EDITOR_PICTURE_URL = re.compile(r'[^\s"\'();&]*?/artifacts/-/edit/picture/[^/\s"\'();&]+/')
+
+def clean_editor_urls(text):
+    """Stored form of slide HTML: editor asset URLs back to `/ds/`, editor picture URLs
+    back to `../images/`. Also repairs slides saved before the editor did this itself."""
+    if not isinstance(text, str):
+        return text
+    return EDITOR_PICTURE_URL.sub('../images/', EDITOR_ASSET_URL.sub('/ds/', text))
+
+
+def render_slides(slides):
+    """Slides as the renderer must see them (see `clean_editor_urls`)."""
+    return [dict(s, html=clean_editor_urls(s['html'])) for s in slides]
+
 
 class EditorError(ValueError):
     pass
@@ -107,7 +126,7 @@ def checked_state(proposed, original, trusted=()):
             raise EditorError('Slide identifiers must be unique.')
         seen.add(sid)
         out['slides'].append({'id': sid, 'name': str(s.get('name') or sid)[:160],
-                              'html': s.get('html') if id(s) in trusted else safe_html(s.get('html')),
+                              'html': s.get('html') if id(s) in trusted else safe_html(clean_editor_urls(s.get('html'))),
                               'layout': str(s.get('layout') or '')[:200], 'skip': bool(s.get('skip'))})
     if len(encode(out)) > MAX_BYTES:
         raise EditorError('This presentation exceeds the 24 MB editing limit.')
@@ -216,7 +235,7 @@ def image_data(raw):
     return {'src': f'data:{mime};base64,' + base64.b64encode(raw).decode(), 'size': size}
 
 
-def thumbnail_cache_key(design_system, slide, pictures):
+def thumbnail_cache_key(design_system, slide, pictures, theme=''):
     """A hash of exactly what rendering a thumbnail of this slide depends on:
     the design system, the slide's own HTML and layout, and the bytes of any
     picture its HTML actually references (by name, since a name can be
@@ -228,8 +247,12 @@ def thumbnail_cache_key(design_system, slide, pictures):
     rendered as a single-slide deck (`client.render(..., [slide], ...)`), so
     the renderer never sees where the slide sits in the full presentation
     and cannot draw a position-dependent page number into it.
+
+    `theme` is the design system's fingerprint (`theme_fingerprint`): without it a
+    thumbnail cached before the theme, its overlay or its patches changed was served
+    unchanged for ever, because the slide's own HTML had not changed.
     """
-    parts = [design_system, slide.get('layout') or '', slide['html']]
+    parts = [design_system, slide.get('layout') or '', slide['html']] + ([theme] if theme else [])
     for name in sorted(set(PICTURE_REF.findall(slide['html']))):
         data = pictures.get(name)
         parts.append(name + ':' + (digest(data) if data is not None else 'missing'))
@@ -242,8 +265,8 @@ def thumbnail_object_key(deck_key, cache_key):
     return deck_key.rsplit('/', 1)[0] + '/thumbs/' + cache_key + '.png'
 
 
-def export_object_key(deck_key, revision, kind):
-    return deck_key.rsplit('/', 1)[0] + '/exports/' + revision + '.' + kind
+def export_object_key(deck_key, revision, kind, theme=''):
+    return deck_key.rsplit('/', 1)[0] + '/exports/' + revision + ('-' + theme[:16] if theme else '') + '.' + kind
 
 
 def read_small(s3, bucket, key, limit):

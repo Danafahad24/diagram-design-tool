@@ -40,21 +40,43 @@
       performance.clearMeasures();
     console.debug("[ve-perf] " + p.name + " " + (performance.now() - p.t).toFixed(1) + "ms", detail);
   }
-  // Match the published corrections applied by Studio without editing the theme.
+  // Match the published corrections applied by Studio without editing the theme,
+  // exactly as studio's patchSlide does: the slide's own root element included, and an
+  // element that already is the corrected markup left alone. Returns the (possibly
+  // replaced) root.
+  const RUNTIME = ["data-ve-id", "data-deck-active", "data-om-validate", "data-dc-tpl", "data-dc-id", "data-deck-index", "slot", "aria-hidden", "inert"];
+  function normal(el) {
+    const copy = el.cloneNode(true);
+    for (const e of [copy, ...copy.querySelectorAll("*")])
+      for (const name of RUNTIME) e.removeAttribute(name);
+    return copy.outerHTML.replace(/\s+/g, " ").trim();
+  }
   function applyPatches(scope) {
     for (const patch of patches) {
       try {
-        for (const target of scope.querySelectorAll(patch.select)) {
-          const template = document.createElement("template");
-          template.innerHTML = patch.html;
-          target.replaceWith(template.content.cloneNode(true));
+        const template = document.createElement("template");
+        template.innerHTML = String(patch.html || "").trim();
+        const first = template.content.firstElementChild;
+        const wanted = first ? normal(first) : null;
+        const hits = [
+          ...(scope.matches(patch.select) ? [scope] : []),
+          ...scope.querySelectorAll(patch.select),
+        ];
+        for (const target of hits) {
+          if (!target.parentNode || (wanted && normal(target) === wanted)) continue;
+          if (target === scope) {
+            if (!first) continue;
+            const next = first.cloneNode(true);
+            target.replaceWith(next);
+            scope = next;
+          } else target.replaceWith(template.content.cloneNode(true));
         }
       } catch {
         /* An optional invalid selector must not disable editing. */
       }
     }
+    return scope;
   }
-  if (root) applyPatches(root);
   function mark() {
     if (!root) return;
     for (const el of [root, ...root.querySelectorAll("*")])
@@ -632,8 +654,7 @@
   }
   function adopt(next) {
     if (root) observer.unobserve(root);
-    root = next;
-    applyPatches(root);
+    root = applyPatches(next);
     mark();
     observer.observe(root);
   }

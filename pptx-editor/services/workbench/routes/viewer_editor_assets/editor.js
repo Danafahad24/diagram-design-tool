@@ -202,8 +202,15 @@
     pictureBase = base + "/picture/" + token + "/";
   // Stored HTML <-> frame HTML. The frame resolves theme assets and pictures
   // through this editor's routes; stored HTML keeps `/ds/` and `../images/`.
+  // Matched by path, not by this page's own origin: the deployment's public URL may carry
+  // a path prefix or a different host than this script's origin, and an editor URL left
+  // in stored HTML is blocked by the renderer (logos vanish from thumbnails and exports).
+  const EDITOR_ASSET_URL = /[^\s"'();&]*?\/artifacts\/-\/edit\/asset\/[^\/\s"'();&]+\//g,
+    EDITOR_PICTURE_URL = /[^\s"'();&]*?\/artifacts\/-\/edit\/picture\/[^\/\s"'();&]+\//g;
   function normalizeHtml(text) {
-    return text.replaceAll(assetBase, "/ds/").replaceAll(pictureBase, "../images/");
+    return text
+      .replace(EDITOR_ASSET_URL, "/ds/")
+      .replace(EDITOR_PICTURE_URL, "../images/");
   }
   function frameHtml(text) {
     return text
@@ -883,8 +890,42 @@
   // Slide operations change the local state, mark what changed, schedule a
   // background save and update the view - in that order, with no await on
   // the network. A new slide is shown and editable before it is ever saved.
+  // The design system's own fragment a new slide starts from (its layout's branding:
+  // logo, classification bar, footer), fetched once per layout and kept, so adding a
+  // slide after the first one never waits on the network.
+  const layoutTemplates = new Map();
+  function layoutTemplate(layout) {
+    const key = layout || "";
+    if (!layoutTemplates.has(key))
+      layoutTemplates.set(
+        key,
+        api("/layout/" + token + "?layout=" + encodeURIComponent(key))
+          .then((r) => r.json())
+          .catch((e) => {
+            layoutTemplates.delete(key);
+            throw e;
+          }),
+      );
+    return layoutTemplates.get(key);
+  }
+  function emptiedCopy(s) {
+    // Fallback only (no template available): the old behaviour.
+    const d = new DOMParser().parseFromString(s.html, "text/html"),
+      root = d.body.firstElementChild;
+    root.replaceChildren();
+    root.removeAttribute("data-speaker-notes");
+    root.style.position = "relative";
+    root.style.width = "1920px";
+    root.style.height = "1080px";
+    return { layout: s.layout, html: root.outerHTML };
+  }
   async function operation(op, id) {
     const p = perfStart("slide-op:" + op);
+    let template = null;
+    if (op === "add") {
+      const from = byId(id);
+      if (from) template = await layoutTemplate(from.layout).catch(() => emptiedCopy(from));
+    }
     await snapshot(); // local only: picks up text still being typed
     historyBoundary();
     const i = state.slides.findIndex((s) => s.id === id),
@@ -931,19 +972,12 @@
       selectedId = fresh.id;
       reopen = true;
     } else if (op === "add") {
-      const d = new DOMParser().parseFromString(s.html, "text/html"),
-        root = d.body.firstElementChild;
-      root.replaceChildren();
-      root.removeAttribute("data-speaker-notes");
-      root.removeAttribute("data-ve-id");
-      root.style.position = "relative";
-      root.style.width = "1920px";
-      root.style.height = "1080px";
+      const t = template || emptiedCopy(s);
       const fresh = {
         id: uid(),
         name: "blank.html",
-        layout: s.layout,
-        html: root.outerHTML,
+        layout: t.layout,
+        html: normalizeHtml(t.html).replace(/\sdata-ve-id="[^"]*"/g, ""),
         skip: false,
       };
       state.slides.splice(i + 1, 0, fresh);
@@ -1227,6 +1261,10 @@
     showSlide(selectedId);
     updateHistory();
     if (state.request_id) restoreThumbnails();
+    (window.requestIdleCallback || ((fn) => setTimeout(fn, 500)))(() => {
+      for (const layout of new Set(state.slides.map((s) => s.layout || "")))
+        layoutTemplate(layout).catch(() => {});
+    });
   } catch (e) {
     status("Editor unavailable", true);
     say(e.message);
